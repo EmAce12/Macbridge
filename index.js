@@ -4,10 +4,13 @@ const { exec, execSync } = require("child_process");
 const unzipper = require("unzipper");
 const https = require("https");
 const http = require("http");
+const fetch = require("node-fetch");
+const FormData = require("form-data");
 
 const TEMP_DIR = path.join(__dirname, "temp");
 const OUTPUT_DIR = path.join(__dirname, "outputs");
 const API_URL = "https://macbridge-backend.onrender.com/jobs/next";
+const RESULT_URL = "https://macbridge-backend.onrender.com/jobs/result";
 
 function log(msg) {
   console.log(`[MacBridge Agent] ${msg}`);
@@ -32,49 +35,90 @@ async function extractZip(zipPath, destPath) {
   });
 }
 
-function runFlutterBuild(projectRoot, outputFile) {
+async function uploadToPixeldrain(filePath) {
+  log("Uploading output to Pixeldrain...");
+  const form = new FormData();
+  form.append("file", fs.createReadStream(filePath));
+
+  const res = await fetch("https://pixeldrain.com/api/file", {
+    method: "POST",
+    body: form
+  });
+
+  const data = await res.json();
+  if (!data.success) throw new Error("Upload failed");
+
+  return `https://pixeldrain.com/api/file/${data.id}`;
+}
+
+async function reportResult(job_id, status, outputUrl = null) {
+  const body = {
+    job_id,
+    status,
+    output_url: outputUrl
+  };
+
+  await fetch(RESULT_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body)
+  });
+
+  log(`Reported job result to backend: ${status}`);
+}
+
+function runFlutterBuild(projectRoot, outputFile, job_id) {
   log("Running flutter build ios --release...");
-  exec("flutter build ios --release", { cwd: projectRoot }, (err) => {
-    if (err) return log(`Build failed: ${err}`);
+  exec("flutter build ios --release", { cwd: projectRoot }, async (err) => {
+    if (err) {
+      log(`Build failed: ${err}`);
+      await reportResult(job_id, "failed");
+      return;
+    }
 
     const ipaPath = path.join(projectRoot, "build/ios/iphoneos/Runner.app");
     if (fs.existsSync(ipaPath)) {
       fs.cpSync(ipaPath, outputFile, { recursive: true });
-      log(`Build complete → ${outputFile}`);
+      const url = await uploadToPixeldrain(outputFile);
+      await reportResult(job_id, "success", url);
+      log(`Build complete → ${url}`);
     } else {
+      await reportResult(job_id, "failed");
       log("Build completed, but .ipa not found.");
     }
   });
 }
 
-function runFlutterSimulatorBuild(projectRoot, outputFile) {
+function runFlutterSimulatorBuild(projectRoot, outputFile, job_id) {
   log("Running flutter build ios --simulator...");
-  exec("flutter build ios --simulator", { cwd: projectRoot }, (err) => {
+  exec("flutter build ios --simulator", { cwd: projectRoot }, async (err) => {
     if (err) {
       log(`Simulator build failed: ${err}`);
+      await reportResult(job_id, "failed");
       return;
     }
 
     const appPath = path.join(projectRoot, "build/ios/iphonesimulator/Runner.app");
-    const simulatorOutput = outputFile.replace(".ipa", ".app");
-
     if (fs.existsSync(appPath)) {
-      fs.cpSync(appPath, simulatorOutput, { recursive: true });
-      log(`Simulator build complete → ${simulatorOutput}`);
+      fs.cpSync(appPath, outputFile, { recursive: true });
+      const url = await uploadToPixeldrain(outputFile);
+      await reportResult(job_id, "success", url);
+      log(`Simulator build complete → ${url}`);
     } else {
+      await reportResult(job_id, "failed");
       log("Simulator build finished, but Runner.app not found.");
     }
   });
 }
 
-function signAndBuild(projectRoot, outputFile) {
+function signAndBuild(projectRoot, outputFile, job_id) {
   const testModePath = path.join(projectRoot, "test_mode.txt");
   log("Looking for test_mode.txt in: " + testModePath);
   const testMode = fs.existsSync(testModePath);
 
   if (testMode) {
     log("Test mode detected — building for iOS simulator...");
-    return runFlutterSimulatorBuild(projectRoot, outputFile);
+    return runFlutterSimulatorBuild(projectRoot, outputFile, job_id);
   }
 
   const certPath = path.join(projectRoot, "signing.p12");
@@ -85,7 +129,7 @@ function signAndBuild(projectRoot, outputFile) {
 
   if (!hasSigning) {
     log("Code signing files not found — skipping signing and attempting normal build.");
-    return runFlutterBuild(projectRoot, outputFile);
+    return runFlutterBuild(projectRoot, outputFile, job_id);
   }
 
   const password = fs.readFileSync(passPath, "utf-8").trim();
@@ -93,14 +137,14 @@ function signAndBuild(projectRoot, outputFile) {
   try {
     log("Importing certificate...");
     execSync(`security import "${certPath}" -k ~/Library/Keychains/login.keychain-db -P "${password}" -T /usr/bin/codesign`);
-
     log("Copying provisioning profile...");
     execSync(`mkdir -p ~/Library/MobileDevice/Provisioning\\ Profiles/`);
     execSync(`cp "${profilePath}" ~/Library/MobileDevice/Provisioning\\ Profiles/`);
 
-    return runFlutterBuild(projectRoot, outputFile);
+    return runFlutterBuild(projectRoot, outputFile, job_id);
   } catch (err) {
     log("Code signing failed: " + err.message);
+    return reportResult(job_id, "failed");
   }
 }
 
@@ -171,7 +215,7 @@ function fetchJobFromAPI() {
         exec("flutter pub get", { cwd: projectRoot }, (err) => {
           if (err) return log(`pub get failed: ${err}`);
           const outputFile = path.join(OUTPUT_DIR, `${jobName}.ipa`);
-          signAndBuild(projectRoot, outputFile);
+          signAndBuild(projectRoot, outputFile, jobName);
         });
 
       } catch (err) {
