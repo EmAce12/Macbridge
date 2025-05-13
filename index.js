@@ -4,8 +4,8 @@ const { exec, execSync } = require("child_process");
 const unzipper = require("unzipper");
 const https = require("https");
 const http = require("http");
-const fetch = require("node-fetch");
-const FormData = require("form-data");
+const archiver = require("archiver");
+const fetch = (...args) => import('node-fetch').then(({ default: fetch }) => fetch(...args));
 
 const TEMP_DIR = path.join(__dirname, "temp");
 const OUTPUT_DIR = path.join(__dirname, "outputs");
@@ -34,34 +34,13 @@ async function extractZip(zipPath, destPath) {
       .on("error", reject);
   });
 }
-
-async function uploadToPixeldrain(filePath) {
-  log("Uploading output to Pixeldrain...");
-  const form = new FormData();
-  form.append("file", fs.createReadStream(filePath));
-
-  const res = await fetch("https://pixeldrain.com/api/file", {
-    method: "POST",
-    body: form
-  });
-
-  const data = await res.json();
-  if (!data.success) throw new Error("Upload failed");
-
-  return `https://pixeldrain.com/api/file/${data.id}`;
-}
-
 async function reportResult(job_id, status, outputUrl = null) {
-  const body = {
-    job_id,
-    status,
-    output_url: outputUrl
-  };
+  const body = { job_id, status, output_url: outputUrl };
 
-  await fetch(RESULT_URL, {
+  const res = await fetch(RESULT_URL, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body)
+    body: JSON.stringify(body),
   });
 
   log(`Reported job result to backend: ${status}`);
@@ -79,9 +58,8 @@ function runFlutterBuild(projectRoot, outputFile, job_id) {
     const ipaPath = path.join(projectRoot, "build/ios/iphoneos/Runner.app");
     if (fs.existsSync(ipaPath)) {
       fs.cpSync(ipaPath, outputFile, { recursive: true });
-      const url = await uploadToPixeldrain(outputFile);
-      await reportResult(job_id, "success", url);
-      log(`Build complete → ${url}`);
+      await reportResult(job_id, "success", "local-only");
+      log(`Build complete → ${outputFile}`);
     } else {
       await reportResult(job_id, "failed");
       log("Build completed, but .ipa not found.");
@@ -101,9 +79,8 @@ function runFlutterSimulatorBuild(projectRoot, outputFile, job_id) {
     const appPath = path.join(projectRoot, "build/ios/iphonesimulator/Runner.app");
     if (fs.existsSync(appPath)) {
       fs.cpSync(appPath, outputFile, { recursive: true });
-      const url = await uploadToPixeldrain(outputFile);
-      await reportResult(job_id, "success", url);
-      log(`Simulator build complete → ${url}`);
+      await reportResult(job_id, "success", "local-only");
+      log(`Simulator build complete → ${outputFile}`);
     } else {
       await reportResult(job_id, "failed");
       log("Simulator build finished, but Runner.app not found.");
@@ -154,7 +131,7 @@ function downloadJobZip(url, destPath) {
 
     function requestAndFollow(currentUrl) {
       const req = client.get(currentUrl, (res) => {
-        if (res.statusCode === 302 || res.statusCode === 301) {
+        if ([301, 302, 303].includes(res.statusCode)) {
           const redirectUrl = res.headers.location;
           if (!redirectUrl) return reject(new Error("Redirect with no location header"));
           log(`Redirecting to: ${redirectUrl}`);
@@ -214,7 +191,7 @@ function fetchJobFromAPI() {
         log("Running flutter pub get in: " + projectRoot);
         exec("flutter pub get", { cwd: projectRoot }, (err) => {
           if (err) return log(`pub get failed: ${err}`);
-          const outputFile = path.join(OUTPUT_DIR, `${jobName}.ipa`);
+          const outputFile = path.join(OUTPUT_DIR, `${jobName}.app`);
           signAndBuild(projectRoot, outputFile, jobName);
         });
 
