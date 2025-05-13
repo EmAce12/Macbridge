@@ -143,13 +143,14 @@ function runFlutterSimulatorBuild(projectRoot, outputFile, job_id) {
   });
 }
 
-function signAndBuild(projectRoot, outputFile, job_id) {
+function signAndBuild(projectRoot, outputFile, job_id, buildMode = "simulator") {
+  log("Build mode: " + buildMode);
   const testModePath = path.join(projectRoot, "test_mode.txt");
-  log("Looking for test_mode.txt in: " + testModePath);
-  const testMode = fs.existsSync(testModePath);
 
-  if (testMode) {
-    log("Test mode detected — building for iOS simulator...");
+  const isSimulator = buildMode === "simulator";
+
+  if (isSimulator) {
+    log("Building for iOS simulator as requested...");
     return runFlutterSimulatorBuild(projectRoot, outputFile, job_id);
   }
 
@@ -160,8 +161,8 @@ function signAndBuild(projectRoot, outputFile, job_id) {
   const hasSigning = fs.existsSync(certPath) && fs.existsSync(profilePath) && fs.existsSync(passPath);
 
   if (!hasSigning) {
-    log("Code signing files not found — skipping signing and attempting normal build.");
-    return runFlutterBuild(projectRoot, outputFile, job_id);
+    log("Code signing files not found — switching to simulator build.");
+    return runFlutterSimulatorBuild(projectRoot, outputFile, job_id);
   }
 
   const password = fs.readFileSync(passPath, "utf-8").trim();
@@ -172,7 +173,6 @@ function signAndBuild(projectRoot, outputFile, job_id) {
     log("Copying provisioning profile...");
     execSync(`mkdir -p ~/Library/MobileDevice/Provisioning\\ Profiles/`);
     execSync(`cp "${profilePath}" ~/Library/MobileDevice/Provisioning\\ Profiles/`);
-
     return runFlutterBuild(projectRoot, outputFile, job_id);
   } catch (err) {
     log("Code signing failed: " + err.message);
@@ -247,7 +247,7 @@ function fetchJobFromAPI() {
         exec("flutter pub get", { cwd: projectRoot }, (err) => {
           if (err) return log(`pub get failed: ${err}`);
           const outputFile = path.join(OUTPUT_DIR, `${jobName}.app`);
-          signAndBuild(projectRoot, outputFile, jobName);
+          signAndBuild(projectRoot, outputFile, jobName, job.build_mode || "simulator");
         });
 
       } catch (err) {
