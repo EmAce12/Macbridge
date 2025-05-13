@@ -1,0 +1,13 @@
+{
+  "type": "service_account",
+  "project_id": "macbridgeuploader",
+  "private_key_id": "dd3e5b5119fd55de2b07f3d6b7e7982a5c0300df",
+  "private_key": "-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQDLeN0bxX9Wowts\neoxUz4mZokpDgecx635Mw5Czix6rbsKkMuyWXQw402Iz+Dg+feMXTTSlAPI5DjLE\nb3LZSaewXuyF0snlFmvoI4MymhxA3tPSDLMoFr+yU+0SKJ6MeuqSKDDDUvW5mlar\n1Q7AHLnvgEZsQzWGriwxOYIzi4epoeRk8rpNRz9UPK6OhQMRPC79LfoU+zxOGqdS\n8Nbuxd0Kni85B48vDPtgPf66fiuWwpLLFeRzS74ZN267OM7Bpqwp/32kJHGxD7sq\nF/VJumc6QoCM4JpV2MLslzNM0hL+lKxK+noewzh2hRaNgzEhM3nr3il5sYYPSMtN\nynwo5hYVAgMBAAECggEAECyD2vTIigD84/sb05QJupIpeBNH5vJywDRdeMAqyHLN\n+xJnNw6fbZbz+/CTu/fyyMPk1ubr2jg0NeQsC3Ss5Tqub3bRgKnXGwVTpP6WF1v/\nF3fV9+5S/6BnPGXJMJ6GreaO9b/O85l+oTsW6JN//jdCodF33ERVE/af0GwbdRLa\nj1qhym1rXDt8kBMBiIP47PPHG7rRMNWatnfEDDnwQtlxQUv1oqgg/IUU/d8HC8dX\nk0BM7cVWic+q8+kbWkLcm9XfNSFHMFhj0HCHKqtUFxx3hH0l1n6jaq/MzO6mzoZr\nlNO9SKmhHuS2zEBfm6M2GL1KiYjmRt6KVmQThCHPoQKBgQDswgedfKabPUc1XAKA\nymD+9EUjgZdsQnEeTlutF3uyIQQmp+A4q97j6AJ/GmOFN/cDG/V2Y7UbCGIUQBB4\n6uvkqjAwbduraedoHT9pCTCsaXJ8Ns2W7MoOtG0M7WYPKWP3fbHL455d4hUKGpvx\n/GvJLnE/4xl4hgRknNPZUBbV5QKBgQDcAkqo/JkulguF8kd18PtnBvun/V25HSRW\nFGg5JhaFZDkZBHoeiP2CPuf1UgSjh5ZycMwk74LE0XsE8oSiPCVlplyhBZxfTATD\nWIGWcG0XpV5+sxDC5+Q516QeU6evWck8EyvUUfMb9fdTCqRr+/oyIW7Qu0GZOxfF\nXWD7VvA8cQKBgDRndhwLvSzbUWmkJgGvyexk0PDc/FFAG52jpnMXoY9581tDCURB\n9qHndrX/d0vDaW9MvvYnd6y2HE9zJrI8/V2tteDiUB8O3+ORpblwCVAAPxDzaGoh\nm0/J6+FSoqZ0eOYM8k+44BLTueh0n1PelVUAbJzBfZ/Juisy80lEiulpAoGAS9My\nXhloxeiKoiiFPn3Gd5StiRFGivUjP9OatA+PdXu8PgYP/JQkIw6BLUiONroVPO3p\nPdWaUTENYAAhfDSUgvsaM5jWcvWlMpo/V1T6FEs3TR1z6mi3fMP4WUdlpIaiV2UY\nFv4DdqCIFAO39UuLyFlDcwcGrcPzBl+PfDBTbdECgYEAmpybY7LHJDZRbyuLoaIp\nS7ic62ugpXrRKjZ/Dn739T4R7cZovD9+XkqvCTNsOm7bG8OLAGnMM95lR9n1pPrx\nXQdt9K+U4Q3w25MbywXT+WKBe/bCOm9g8Y9oZmqRTK/TfWLmXTYncUrUOwtZOtdQ\nB81Pw5XVUnfmccWLCAC3xHA=\n-----END PRIVATE KEY-----\n",
+  "client_email": "macbridgeuploader@macbridgeuploader.iam.gserviceaccount.com",
+  "client_id": "113137540600968194408",
+  "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+  "token_uri": "https://oauth2.googleapis.com/token",
+  "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+  "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/macbridgeuploader%40macbridgeuploader.iam.gserviceaccount.com",
+  "universe_domain": "googleapis.com"
+}

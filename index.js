@@ -6,6 +6,10 @@ const https = require("https");
 const http = require("http");
 const archiver = require("archiver");
 const fetch = (...args) => import('node-fetch').then(({ default: fetch }) => fetch(...args));
+const { google } = require("googleapis");
+const KEYFILEPATH = path.join(__dirname, "gdrive-key.json");
+const SCOPES = ["https://www.googleapis.com/auth/drive"];
+const DRIVE_FOLDER_ID = "1olOvZZbvGuyzoB-9L1d8sZXe9iEzauOA"; // <-- Replace with your actual Google Drive folder ID
 
 const TEMP_DIR = path.join(__dirname, "temp");
 const OUTPUT_DIR = path.join(__dirname, "outputs");
@@ -46,6 +50,56 @@ async function reportResult(job_id, status, outputUrl = null) {
   log(`Reported job result to backend: ${status}`);
 }
 
+async function uploadToGoogleDrive(filePath) {
+  log("Zipping output for upload...");
+
+  const zipPath = filePath + ".zip";
+  const output = fs.createWriteStream(zipPath);
+  const archive = archiver("zip", { zlib: { level: 9 } });
+
+  archive.directory(filePath, false);
+  archive.pipe(output);
+  await archive.finalize();
+
+  const auth = new google.auth.GoogleAuth({
+    keyFile: KEYFILEPATH,
+    scopes: SCOPES,
+  });
+
+  const drive = google.drive({ version: "v3", auth });
+
+  const fileMetadata = {
+    name: path.basename(zipPath),
+    parents: [DRIVE_FOLDER_ID],
+  };
+
+  const media = {
+    mimeType: "application/zip",
+    body: fs.createReadStream(zipPath),
+  };
+
+  log("Uploading to Google Drive...");
+  const file = await drive.files.create({
+    resource: fileMetadata,
+    media,
+    fields: "id",
+  });
+
+  const fileId = file.data.id;
+
+  await drive.permissions.create({
+    fileId,
+    requestBody: {
+      role: "reader",
+      type: "anyone",
+    },
+  });
+
+  const publicUrl = `https://drive.google.com/uc?id=${fileId}&export=download`;
+  log(`Uploaded to Google Drive: ${publicUrl}`);
+  return publicUrl;
+}
+
 function runFlutterBuild(projectRoot, outputFile, job_id) {
   log("Running flutter build ios --release...");
   exec("flutter build ios --release", { cwd: projectRoot }, async (err) => {
@@ -79,8 +133,9 @@ function runFlutterSimulatorBuild(projectRoot, outputFile, job_id) {
     const appPath = path.join(projectRoot, "build/ios/iphonesimulator/Runner.app");
     if (fs.existsSync(appPath)) {
       fs.cpSync(appPath, outputFile, { recursive: true });
-      await reportResult(job_id, "success", "local-only");
-      log(`Simulator build complete → ${outputFile}`);
+      const outputUrl = await uploadToGoogleDrive(outputFile);
+      await reportResult(job_id, "success", outputUrl);
+      log(`Simulator build complete → ${outputUrl}`);
     } else {
       await reportResult(job_id, "failed");
       log("Simulator build finished, but Runner.app not found.");
