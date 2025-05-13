@@ -7,6 +7,7 @@ const http = require("http");
 const archiver = require("archiver");
 const fetch = (...args) => import('node-fetch').then(({ default: fetch }) => fetch(...args));
 const { google } = require("googleapis");
+const { stderr } = require("process");
 const KEYFILEPATH = path.join(__dirname, "gdrive-key.json");
 const SCOPES = ["https://www.googleapis.com/auth/drive"];
 const DRIVE_FOLDER_ID = "1olOvZZbvGuyzoB-9L1d8sZXe9iEzauOA"; // <-- Replace with your actual Google Drive folder ID
@@ -38,8 +39,15 @@ async function extractZip(zipPath, destPath) {
       .on("error", reject);
   });
 }
-async function reportResult(job_id, status, outputUrl = null) {
-  const body = { job_id, status, output_url: outputUrl };
+async function reportResult(job_id, status, outputUrl = null, errorMessage = null) {
+  const body = {
+    job_id,
+    status,
+    output_url: outputUrl,
+  };
+  if (errorMessage) {
+    body.error_message = errorMessage;
+  }
 
   const res = await fetch(RESULT_URL, {
     method: "POST",
@@ -47,7 +55,7 @@ async function reportResult(job_id, status, outputUrl = null) {
     body: JSON.stringify(body),
   });
 
-  log(`Reported job result to backend: ${status}`);
+  log(`Reported job result to backend: ${status}${errorMessage ? " with error message" : ""}`);
 }
 
 async function uploadToGoogleDrive(filePath) {
@@ -105,7 +113,7 @@ function runFlutterBuild(projectRoot, outputFile, job_id) {
   exec("flutter build ios --release", { cwd: projectRoot }, async (err) => {
     if (err) {
       log(`Build failed: ${err}`);
-      await reportResult(job_id, "failed");
+      await reportResult(job_id, "failed", null, err.message);
       return;
     }
 
@@ -115,7 +123,7 @@ function runFlutterBuild(projectRoot, outputFile, job_id) {
       await reportResult(job_id, "success", "local-only");
       log(`Build complete → ${outputFile}`);
     } else {
-      await reportResult(job_id, "failed");
+      await reportResult(job_id, "failed", null, err.message);
       log("Build completed, but .ipa not found.");
     }
   });
@@ -126,7 +134,7 @@ function runFlutterSimulatorBuild(projectRoot, outputFile, job_id) {
   exec("flutter build ios --simulator", { cwd: projectRoot }, async (err) => {
     if (err) {
       log(`Simulator build failed: ${err}`);
-      await reportResult(job_id, "failed");
+      await reportResult(job_id, "failed", null, err.message);
       return;
     }
 
@@ -137,7 +145,7 @@ function runFlutterSimulatorBuild(projectRoot, outputFile, job_id) {
       await reportResult(job_id, "success", outputUrl);
       log(`Simulator build complete → ${outputUrl}`);
     } else {
-      await reportResult(job_id, "failed");
+      await reportResult(job_id, "failed", null, err.message);
       log("Simulator build finished, but Runner.app not found.");
     }
   });
@@ -209,6 +217,8 @@ function downloadJobZip(url, destPath) {
   });
 }
 
+// ... [top imports remain the same, unchanged]
+
 function fetchJobFromAPI() {
   log("Checking for jobs from cloud...");
 
@@ -240,18 +250,30 @@ function fetchJobFromAPI() {
         const projectRoot = findFlutterProjectRoot(extractPath);
         if (!projectRoot) {
           log("pubspec.yaml not found in any folder");
+          await reportResult(jobName, "failed", null);
           return;
         }
 
         log("Running flutter pub get in: " + projectRoot);
         exec("flutter pub get", { cwd: projectRoot }, (err) => {
-          if (err) return log(`pub get failed: ${err}`);
+          if (err) {
+            log(`pub get failed: ${err}`);
+            reportResult(jobName, "failed", null, stderr || err.message);
+            return;
+          }
+
           const outputFile = path.join(OUTPUT_DIR, `${jobName}.app`);
           signAndBuild(projectRoot, outputFile, jobName, job.build_mode || "simulator");
         });
 
       } catch (err) {
         log("Error handling job: " + err.message);
+        if (data.includes("job_id")) {
+          try {
+            const job = JSON.parse(data);
+            if (job?.job_id) await reportResult(job.job_id, "failed", null);
+          } catch {}
+        }
       }
     });
   }).on("error", err => {
@@ -275,3 +297,36 @@ function findFlutterProjectRoot(startPath) {
 
 log("Agent started...");
 fetchJobFromAPI();
+
+function runPubGet(projectRoot) {
+  return new Promise((resolve) => {
+    exec("flutter pub get", { cwd: projectRoot }, (err) => {
+      if (err) {
+        log(`pub get failed: ${err}`);
+        resolve(false);
+      } else {
+        resolve(true);
+      }
+    });
+  });
+}
+
+function runWithRetry(taskFn, retries, onComplete) {
+  let attempts = 0;
+
+  async function attempt() {
+    attempts++;
+    const success = await taskFn();
+    if (success) {
+      onComplete(true);
+    } else if (attempts <= retries) {
+      log(`Retrying (${attempts}/${retries})...`);
+      setTimeout(attempt, 2000);
+    } else {
+      log("Max retry attempts reached.");
+      onComplete(false);
+    }
+  }
+
+  attempt();
+}
