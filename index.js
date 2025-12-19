@@ -3,15 +3,10 @@ const path = require("path");
 const { exec, execSync } = require("child_process");
 const unzipper = require("unzipper");
 const https = require("https");
-const http = require("http");
 const archiver = require("archiver");
 const fetch = (...args) => import("node-fetch").then(({ default: fetch }) => fetch(...args));
 const { google } = require("googleapis");
-
 const WebSocket = require("ws");
-let ws;
-let logQueue = [];
-let socketReady = false;
 
 const KEYFILEPATH = path.join(__dirname, "gdrive-key.json");
 const SCOPES = ["https://www.googleapis.com/auth/drive"];
@@ -21,25 +16,31 @@ const OUTPUT_DIR = path.join(__dirname, "outputs");
 const API_URL = "https://macbridge-backend.onrender.com/jobs/next";
 const RESULT_URL = "https://macbridge-backend.onrender.com/jobs/result";
 
-// WebSocket Setup (Render URL)
+let ws;
+let logQueue = [];
+let socketReady = false;
+
+// Reconnect WebSocket with backoff
 function initWebSocket() {
   ws = new WebSocket("wss://macbridge-ws-logger.onrender.com");
 
   ws.on("open", () => {
     socketReady = true;
     console.log("[WebSocket] Connected to log server");
-
-    // Flush any early logs
-    logQueue.forEach((payload) => {
-      ws.send(JSON.stringify(payload));
-    });
+    logQueue.forEach((payload) => ws.send(JSON.stringify(payload)));
     logQueue = [];
-
     sendLog("Connected to remote WebSocket log server");
   });
 
   ws.on("error", (err) => {
     console.error("[WebSocket Error]:", err.message);
+    socketReady = false;
+  });
+
+  ws.on("close", () => {
+    socketReady = false;
+    console.log("[WebSocket] Closed, reconnecting in 30s...");
+    setTimeout(initWebSocket, 30000); // Backoff
   });
 }
 
@@ -55,7 +56,7 @@ function sendLog(msg, jobId = null) {
   if (socketReady && ws?.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify(payload));
   } else {
-    logQueue.push(payload); // store until ready
+    logQueue.push(payload);
   }
 }
 
@@ -83,13 +84,16 @@ async function extractZip(zipPath, destPath, jobId) {
 async function reportResult(job_id, status, outputUrl = null, webhookUrl = null, errorMessage = null) {
   const body = { job_id, status, output_url: outputUrl, error: errorMessage };
 
-  await fetch(RESULT_URL, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
-
-  sendLog(`Reported job result to backend: ${status}`, job_id);
+  try {
+    await fetch(RESULT_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    sendLog(`Reported job result to backend: ${status}`, job_id);
+  } catch (err) {
+    sendLog(`Failed to report result: ${err.message}`, job_id);
+  }
 
   if (webhookUrl) {
     try {
@@ -98,9 +102,9 @@ async function reportResult(job_id, status, outputUrl = null, webhookUrl = null,
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
       });
-      sendLog("Webhook notified successfully.", job_id);
+      sendLog("Webhook notified successfully.", jobId);
     } catch (err) {
-      sendLog("Failed to notify webhook: " + err.message, job_id);
+      sendLog("Failed to notify webhook: " + err.message, jobId);
     }
   }
 }
@@ -156,27 +160,6 @@ async function uploadToGoogleDrive(filePath, jobId) {
   }
 }
 
-function runFlutterBuild(projectRoot, outputFile, job_id, webhookUrl) {
-  sendLog("Running flutter build ios --release...", job_id);
-  exec("flutter build ios --release", { cwd: projectRoot }, async (err) => {
-    if (err) {
-      sendLog(`Build failed: ${err}`, job_id);
-      await reportResult(job_id, "failed", null, webhookUrl, err.message);
-      return;
-    }
-
-    const ipaPath = path.join(projectRoot, "build/ios/iphoneos/Runner.app");
-    if (fs.existsSync(ipaPath)) {
-      fs.cpSync(ipaPath, outputFile, { recursive: true });
-      await reportResult(job_id, "success", "local-only", webhookUrl);
-      sendLog(`Build complete → ${outputFile}`, job_id);
-    } else {
-      await reportResult(job_id, "failed", null, webhookUrl, "Runner.app not found after release build.");
-      sendLog("Build completed, but .ipa not found.", job_id);
-    }
-  });
-}
-
 function runFlutterSimulatorBuild(projectRoot, outputFile, job_id, webhookUrl) {
   sendLog("Running flutter build ios --simulator...", job_id);
   exec("flutter build ios --simulator", { cwd: projectRoot }, async (err) => {
@@ -199,66 +182,7 @@ function runFlutterSimulatorBuild(projectRoot, outputFile, job_id, webhookUrl) {
   });
 }
 
-function signAndBuild(projectRoot, outputFile, job_id, buildMode = "simulator", webhookUrl = null) {
-  sendLog("Build mode: " + buildMode, job_id);
-
-  if (buildMode === "simulator") {
-    return runFlutterSimulatorBuild(projectRoot, outputFile, job_id, webhookUrl);
-  }
-
-  const certPath = path.join(projectRoot, "signing.p12");
-  const profilePath = path.join(projectRoot, "profile.mobileprovision");
-  const passPath = path.join(projectRoot, "password.txt");
-
-  const hasSigning = fs.existsSync(certPath) && fs.existsSync(profilePath) && fs.existsSync(passPath);
-
-  if (!hasSigning) {
-    sendLog("Code signing files not found — switching to simulator build.", job_id);
-    return runFlutterSimulatorBuild(projectRoot, outputFile, job_id, webhookUrl);
-  }
-
-  const password = fs.readFileSync(passPath, "utf-8").trim();
-
-  try {
-    sendLog("Importing certificate...", job_id);
-    execSync(`security import "${certPath}" -k ~/Library/Keychains/login.keychain-db -P "${password}" -T /usr/bin/codesign`);
-    execSync(`mkdir -p ~/Library/MobileDevice/Provisioning\\ Profiles/`);
-    execSync(`cp "${profilePath}" ~/Library/MobileDevice/Provisioning\\ Profiles/`);
-    return runFlutterBuild(projectRoot, outputFile, job_id, webhookUrl);
-  } catch (err) {
-    sendLog("Code signing failed: " + err.message, job_id);
-    return reportResult(job_id, "failed", null, webhookUrl, err.message);
-  }
-}
-
-function downloadJobZip(url, destPath, jobId) {
-  return new Promise((resolve, reject) => {
-    const client = url.startsWith("https") ? https : http;
-
-    function requestAndFollow(currentUrl) {
-      const req = client.get(currentUrl, (res) => {
-        if ([301, 302, 303].includes(res.statusCode)) {
-          const redirectUrl = res.headers.location;
-          if (!redirectUrl) return reject(new Error("Redirect with no location header"));
-          sendLog(`Redirecting to: ${redirectUrl}`, jobId);
-          return requestAndFollow(redirectUrl);
-        }
-
-        if (res.statusCode !== 200) {
-          return reject(new Error(`Download failed: ${res.statusCode}`));
-        }
-
-        const file = fs.createWriteStream(destPath);
-        res.pipe(file);
-        file.on("finish", () => file.close(resolve));
-      });
-
-      req.on("error", reject);
-    }
-
-    requestAndFollow(url);
-  });
-}
+// ... (keep your other functions: runFlutterBuild, signAndBuild, downloadJobZip, findFlutterProjectRoot)
 
 function fetchJobFromAPI() {
   sendLog("Checking for jobs from cloud...");
@@ -267,10 +191,17 @@ function fetchJobFromAPI() {
     let data = "";
     res.on("data", (chunk) => (data += chunk));
     res.on("end", async () => {
+      if (res.statusCode !== 200) {
+        sendLog(`API error: ${res.statusCode} - ${data.substring(0, 100)}...`);
+        setTimeout(fetchJobFromAPI, 30000); // Backoff 30s
+        return;
+      }
+
       try {
         const job = JSON.parse(data);
         if (!job.job_id || !job.zip_url) {
           sendLog("No jobs available.");
+          setTimeout(fetchJobFromAPI, 10000); // Poll 10s
           return;
         }
 
@@ -295,6 +226,7 @@ function fetchJobFromAPI() {
         if (!projectRoot) {
           sendLog("pubspec.yaml not found in any folder", jobName);
           await reportResult(jobName, "failed", null, webhookUrl, "pubspec.yaml not found");
+          setTimeout(fetchJobFromAPI, 10000);
           return;
         }
 
@@ -303,6 +235,7 @@ function fetchJobFromAPI() {
           if (err) {
             sendLog(`pub get failed: ${err}`, jobName);
             reportResult(jobName, "failed", null, webhookUrl, err.message);
+            setTimeout(fetchJobFromAPI, 10000);
             return;
           }
 
@@ -310,35 +243,20 @@ function fetchJobFromAPI() {
           signAndBuild(projectRoot, outputFile, jobName, buildMode, webhookUrl);
         });
       } catch (err) {
-        sendLog("Error handling job: " + err.message);
-        try {
-          const job = JSON.parse(data);
-          if (job?.job_id) await reportResult(job.job_id, "failed", null, job.webhook_url || null, err.message);
-        } catch {}
+        sendLog("JSON parse or handling error: " + err.message);
+        setTimeout(fetchJobFromAPI, 30000);
       }
     });
   }).on("error", (err) => {
     sendLog("Failed to contact API: " + err.message);
+    setTimeout(fetchJobFromAPI, 30000);
   });
 }
 
-function findFlutterProjectRoot(startPath) {
-  const entries = fs.readdirSync(startPath);
-  if (entries.includes("pubspec.yaml")) return startPath;
+// Poll every 10s
+setInterval(fetchJobFromAPI, 10000);
 
-  for (const entry of entries) {
-    const fullPath = path.join(startPath, entry);
-    if (fs.statSync(fullPath).isDirectory()) {
-      const result = findFlutterProjectRoot(fullPath);
-      if (result) return result;
-    }
-  }
-  return null;
-}
+// Initial call
+fetchJobFromAPI();
 
 sendLog("Agent started...");
-
-// Wait a second to allow WebSocket subscription from frontend
-setTimeout(() => {
-  fetchJobFromAPI();
-}, 1000);
